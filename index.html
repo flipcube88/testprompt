@@ -72,14 +72,11 @@
         // --- Firebase 初始化 ---
         const firebaseConfig = {
             apiKey: "AIzaSyD6s5zYl7VtTxnqcXPkWccGAB7zug1pgi8",
-            authDomain: "testprompt-e4212.firebaseapp.com", // 已經修正為正確的 Domain
+            authDomain: "testprompt-e4212.firebaseapp.com", // 已修正
             projectId: "testprompt-e4212",
-            storageBucket: "testprompt-e4212.appspot.com",
-            messagingSenderId: "你的_SENDER_ID", // 如果無用到 FCM 可以留空或者唔理佢
-            appId: "你的_APP_ID" // 如果無用到 Analytics 可以留空或者唔理佢
+            storageBucket: "testprompt-e4212.appspot.com"
         };
         
-        // 初始化 Firebase
         if (!firebase.apps.length) {
             firebase.initializeApp(firebaseConfig);
         }
@@ -87,7 +84,6 @@
         const db = firebase.firestore();
         const googleProvider = new firebase.auth.GoogleAuthProvider();
 
-        // Custom Hook: 處理點擊外部事件
         function useOnClickOutside(ref, handler) {
             useEffect(() => {
                 const listener = (event) => {
@@ -118,7 +114,6 @@
             { id: 'gray', value: '#e8eaed', darkValue: '#3c3f43' },
         ];
 
-        // 優化後的 Icon 組件
         const Icon = ({ name, size = 24, className = "" }) => {
             const containerRef = useRef(null);
             useEffect(() => {
@@ -137,7 +132,6 @@
             return <span ref={containerRef} style={{ display: 'contents' }}></span>;
         };
 
-        // 刪除確認對話框
         const ConfirmModal = ({ isOpen, title, message, onConfirm, onCancel }) => {
             if (!isOpen) return null;
             return (
@@ -217,10 +211,9 @@
                     const saved = localStorage.getItem('prompt-keep-notes-local');
                     if (saved) return JSON.parse(saved);
                 } catch (e) {}
-                return [{ id: '1', title: '歡迎使用', content: '只要登入 Google 帳號，筆記就會同步到雲端！\n\n右上角可以切換深色/淺色模式喔！🌙\n\n\x60\x60\x60javascript\nconsole.log("Dark Mode Enabled!");\n\x60\x60\x60', color: '#ccff90', timestamp: Date.now() }];
+                return [{ id: '1', title: '歡迎使用', content: '登入 Google 帳號後，筆記就會自動同步到雲端！\n\n右上角可以切換深色/淺色模式喔！🌙\n\n\x60\x60\x60javascript\nconsole.log("Dark Mode Enabled!");\n\x60\x60\x60', color: '#ccff90', timestamp: Date.now() }];
             });
 
-            // Authentication & Sync State
             const [user, setUser] = useState(null);
             const [isSyncing, setIsSyncing] = useState(false);
             const [authChecking, setAuthChecking] = useState(true);
@@ -242,15 +235,15 @@
             const textareaRef = useRef(null);
             const paletteRef = useRef(null);
 
-            // 處理登入與登出
+            // 🌟 修正點 1：轉用 Redirect 登入
             const handleLogin = () => {
-                auth.signInWithPopup(googleProvider).catch(e => alert("登入失敗：" + e.message));
+                auth.signInWithRedirect(googleProvider);
             };
 
             const handleLogout = () => {
                 if (window.confirm("確定要登出帳號嗎？")) {
                     auth.signOut();
-                    setNotes([]); // 登出後清空畫面筆記
+                    setNotes([]); 
                 }
             };
 
@@ -268,8 +261,13 @@
                 });
             }, []);
 
-            // 監聽登入狀態與同步資料庫
             useEffect(() => {
+                // 🌟 修正點 2：處理 Redirect 返回時的結果或錯誤
+                auth.getRedirectResult().catch((error) => {
+                    console.error("Redirect 登入發生錯誤:", error);
+                    alert("登入過程中發生錯誤：" + error.message);
+                });
+
                 const unsubscribeAuth = auth.onAuthStateChanged((currentUser) => {
                     setUser(currentUser);
                     setAuthChecking(false);
@@ -289,7 +287,6 @@
                             });
                         return () => unsubscribeDb();
                     } else {
-                        // 如果無登入，就讀取 Local Storage
                         try {
                             const saved = localStorage.getItem('prompt-keep-notes-local');
                             if (saved) setNotes(JSON.parse(saved));
@@ -299,12 +296,11 @@
                 return () => unsubscribeAuth();
             }, []);
 
-            // 當訪客模式下更新筆記，儲存到 Local Storage
             useEffect(() => {
-                if (!user) {
+                if (!user && !authChecking) {
                     localStorage.setItem('prompt-keep-notes-local', JSON.stringify(notes));
                 }
-            }, [notes, user]);
+            }, [notes, user, authChecking]);
 
             const toggleDarkMode = () => {
                 if (isDarkMode) {
@@ -392,27 +388,23 @@
                         </div>
                         
                         <div className="flex items-center gap-2 sm:gap-3">
-                            {/* 同步狀態 */}
                             <div className="text-xs sm:text-sm text-gray-500 dark:text-gray-400 font-medium flex items-center gap-1.5 mr-1">
-                                {user ? (
+                                {!authChecking && user ? (
                                     isSyncing ? <span className="text-blue-500 dark:text-blue-400 animate-pulse flex items-center gap-1"><Icon name="Cloud" size={16}/> <span className="hidden sm:inline">同步中</span></span> 
                                               : <span className="text-green-600 dark:text-green-400 flex items-center gap-1"><Icon name="Cloud" size={16}/> <span className="hidden sm:inline">已同步</span></span>
                                 ) : <span className="text-orange-500 dark:text-orange-400 flex items-center gap-1"><Icon name="HardDrive" size={16}/> <span className="hidden sm:inline">本機儲存</span></span>}
                             </div>
 
-                            {/* PWA 安裝按鈕 */}
                             {isInstallable && (
                                 <button onClick={handleInstallClick} className="flex items-center gap-2 px-3 py-1.5 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 rounded-full font-semibold text-sm border border-blue-200 dark:border-blue-800 transition-colors">
                                     <Icon name="Download" size={16} /> <span className="hidden sm:inline">安裝 App</span>
                                 </button>
                             )}
 
-                            {/* 深色模式切換 */}
                             <button onClick={toggleDarkMode} className="p-2 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-full transition-colors">
                                 {isDarkMode ? <Icon name="Sun" size={18} /> : <Icon name="Moon" size={18} />}
                             </button>
 
-                            {/* Google 登入/帳號按鈕 (取代舊嘅 PWA 底部 Bar) */}
                             {!authChecking && (
                                 user ? (
                                     <button onClick={handleLogout} className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-full font-medium text-sm transition-colors border dark:border-gray-600" title="點擊登出">
@@ -430,7 +422,6 @@
                     </header>
 
                     <main className="max-w-6xl mx-auto p-4 sm:p-6 lg:p-8">
-                        {/* Compose Area */}
                         <div className="max-w-2xl mx-auto mb-10 relative" ref={composeRef}>
                             <div className={`rounded-xl transition-all duration-300 ${isComposing ? 'shadow-lg border border-gray-200 dark:border-gray-700' : 'shadow shadow-gray-200 dark:shadow-none hover:shadow-md cursor-text dark:border dark:border-gray-700'}`} style={{ backgroundColor: getActiveColor(newColor) }}>
                                 {!isComposing ? (
@@ -457,7 +448,6 @@
                             </div>
                         </div>
 
-                        {/* Notes Grid */}
                         <div className="columns-1 sm:columns-2 lg:columns-3 xl:columns-4 gap-4">
                             {notes.map(note => {
                                 const currentBgColor = getActiveColor(note.color);
@@ -479,7 +469,6 @@
                         </div>
                     </main>
 
-                    {/* Editor Modal */}
                     {activeNote && (
                         <div className="fixed inset-0 bg-black/60 dark:bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => !isModalEditing && setActiveNote(null)}>
                             <div className="w-full max-w-2xl rounded-xl shadow-2xl flex flex-col max-h-[90vh] relative border dark:border-gray-700 transition-colors duration-200" style={{ backgroundColor: getActiveColor(activeNote.color) }} onClick={e => e.stopPropagation()}>
