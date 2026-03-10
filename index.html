@@ -1,1 +1,555 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Prompt Keep</title>
+    
+    <meta name="theme-color" content="#2563eb">
+    <meta name="description" content="你的個人 Prompt 與程式碼片段管理工具">
+    <link rel="icon" href="https://api.iconify.design/lucide/copy.svg?color=%232563eb" type="image/svg+xml">
+    
+    <script>
+      const manifest = {
+        "name": "Prompt Keep", "short_name": "PromptKeep", "description": "你的個人 Prompt 與程式碼片段管理工具",
+        "start_url": ".", "display": "standalone", "background_color": "#f9fafb", "theme_color": "#2563eb",
+        "icons": [
+          { "src": "https://api.iconify.design/lucide/copy.svg?color=%232563eb&width=192&height=192", "sizes": "192x192", "type": "image/svg+xml" },
+          { "src": "https://api.iconify.design/lucide/copy.svg?color=%232563eb&width=512&height=512", "sizes": "512x512", "type": "image/svg+xml", "purpose": "any maskable" }
+        ]
+      };
+      const blob = new Blob([JSON.stringify(manifest)], { type: 'application/manifest+json' });
+      const manifestURL = URL.createObjectURL(blob);
+      const link = document.createElement('link'); link.rel = 'manifest'; link.href = manifestURL; document.head.appendChild(link);
+    </script>
 
+    <!-- 預防 FOUC：在畫面渲染前先套用深色模式設定 -->
+    <script>
+        if (localStorage.getItem('prompt-keep-theme') === 'dark' || (!('prompt-keep-theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+            document.documentElement.classList.add('dark');
+        } else {
+            document.documentElement.classList.remove('dark');
+        }
+    </script>
+
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
+    
+    <!-- 引入 Tailwind CSS 並開啟 class 深色模式 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = { darkMode: 'class' };
+    </script>
+    
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    
+    
+
+    <style>
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+        .dark ::-webkit-scrollbar-thumb { background: #4b5563; }
+        .dark ::-webkit-scrollbar-thumb:hover { background: #6b7280; }
+        
+        .code-preview-fade::after {
+            content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 40px;
+            background: linear-gradient(to top, #1f2937, transparent); pointer-events: none;
+        }
+        .dark .code-preview-fade::after {
+            background: linear-gradient(to top, #111827, transparent);
+        }
+    </style>
+</head>
+<body class="bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 font-sans antialiased selection:bg-blue-200 dark:selection:bg-blue-900 transition-colors duration-200">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useCallback } = React;
+
+        // Custom Hook: 處理點擊外部事件
+        function useOnClickOutside(ref, handler) {
+            useEffect(() => {
+                const listener = (event) => {
+                    if (!ref.current || ref.current.contains(event.target)) return;
+                    handler(event);
+                };
+                document.addEventListener("mousedown", listener);
+                document.addEventListener("touchstart", listener);
+                return () => {
+                    document.removeEventListener("mousedown", listener);
+                    document.removeEventListener("touchstart", listener);
+                };
+            }, [ref, handler]);
+        }
+
+        const firebaseConfig = {
+            apiKey: "你的_API_KEY",
+            authDomain: "你的_PROJECT_ID.firebaseapp.com",
+            projectId: "你的_PROJECT_ID",
+            storageBucket: "你的_PROJECT_ID.appspot.com",
+            messagingSenderId: "你的_SENDER_ID",
+            appId: "你的_APP_ID"
+        };
+        
+        let app, auth, db;
+        let isFirebaseConfigured = firebaseConfig.apiKey !== "你的_API_KEY" && firebaseConfig.apiKey !== "";
+        if (isFirebaseConfigured) {
+             app = firebase.initializeApp(firebaseConfig); auth = firebase.auth(); db = firebase.firestore();
+        }
+
+        const COLORS = [
+            { id: 'default', value: '#ffffff', darkValue: '#1f2937' },
+            { id: 'red', value: '#f28b82', darkValue: '#5c2b29' },
+            { id: 'orange', value: '#fbbc04', darkValue: '#614a19' },
+            { id: 'yellow', value: '#fff475', darkValue: '#635d19' },
+            { id: 'green', value: '#ccff90', darkValue: '#345920' },
+            { id: 'teal', value: '#a7ffeb', darkValue: '#16504b' },
+            { id: 'blue', value: '#cbf0f8', darkValue: '#2d555e' },
+            { id: 'darkblue', value: '#aecbfa', darkValue: '#1e3a5f' },
+            { id: 'purple', value: '#d7aefb', darkValue: '#42275e' },
+            { id: 'pink', value: '#fdcfe8', darkValue: '#5b2245' },
+            { id: 'brown', value: '#e6c9a8', darkValue: '#442f19' },
+            { id: 'gray', value: '#e8eaed', darkValue: '#3c3f43' },
+        ];
+
+        // 優化後的 Icon 組件：加入清理機制
+        const Icon = ({ name, size = 24, className = "" }) => {
+            const containerRef = useRef(null);
+            useEffect(() => {
+                if (containerRef.current && lucide.icons[name]) {
+                    containerRef.current.innerHTML = `<i data-lucide="${name}"></i>`;
+                    lucide.createIcons({ 
+                        icons: { [name]: lucide.icons[name] }, 
+                        nameAttr: 'data-lucide', 
+                        attrs: { class: className, width: size, height: size } 
+                    });
+                }
+                return () => {
+                    if (containerRef.current) containerRef.current.innerHTML = '';
+                };
+            }, [name, size, className]);
+            return <span ref={containerRef} style={{ display: 'contents' }}></span>;
+        };
+
+        // 刪除確認對話框
+        const ConfirmModal = ({ isOpen, title, message, onConfirm, onCancel }) => {
+            if (!isOpen) return null;
+            return (
+                <div className="fixed inset-0 bg-black/50 dark:bg-black/70 backdrop-blur-sm z-[60] flex items-center justify-center p-4" onClick={onCancel}>
+                    <div className="bg-white dark:bg-gray-800 rounded-xl shadow-2xl max-w-sm w-full p-6 border dark:border-gray-700" onClick={e => e.stopPropagation()}>
+                        <div className="flex items-center gap-3 mb-4 text-red-600 dark:text-red-400">
+                            <Icon name="AlertTriangle" size={24} />
+                            <h3 className="text-xl font-bold text-gray-900 dark:text-gray-100">{title}</h3>
+                        </div>
+                        <p className="text-gray-600 dark:text-gray-300 mb-6">{message}</p>
+                        <div className="flex justify-end gap-3">
+                            <button onClick={onCancel} className="px-4 py-2 rounded-lg font-medium bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors">取消</button>
+                            <button onClick={onConfirm} className="px-4 py-2 rounded-lg font-medium bg-red-600 hover:bg-red-700 text-white transition-colors shadow-sm">確認刪除</button>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const CodeBlock = ({ code, language, isPreview }) => {
+            const [copied, setCopied] = useState(false);
+            const handleCopy = (e) => {
+                e.stopPropagation(); 
+                if (navigator.clipboard && window.isSecureContext) {
+                    navigator.clipboard.writeText(code).then(() => showCopied());
+                } else {
+                    const textArea = document.createElement("textarea"); textArea.value = code;
+                    textArea.style.position = "fixed"; textArea.style.left = "-999999px";
+                    document.body.appendChild(textArea); textArea.focus(); textArea.select();
+                    try { document.execCommand('copy'); showCopied(); } catch (err) {}
+                    document.body.removeChild(textArea);
+                }
+            };
+            const showCopied = () => { setCopied(true); setTimeout(() => setCopied(false), 2000); };
+
+            return (
+                <div className="relative group bg-gray-800 dark:bg-gray-900 rounded-lg my-3 shadow-inner overflow-hidden cursor-text" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex justify-between items-center bg-gray-900 dark:bg-gray-950 px-3 py-1.5 border-b border-gray-700 dark:border-gray-800">
+                        <span className="text-xs text-gray-400 font-medium uppercase tracking-wider">{language || 'Prompt / Code'}</span>
+                        <button onClick={handleCopy} className="flex items-center gap-1.5 px-2 py-1 text-xs font-medium text-gray-300 hover:text-white hover:bg-gray-700 dark:hover:bg-gray-800 rounded transition-colors">
+                            {copied ? <Icon name="Check" size={14} className="text-green-400" /> : <Icon name="Copy" size={14} />}
+                            {copied ? <span className="text-green-400">已複製!</span> : <span>複製</span>}
+                        </button>
+                    </div>
+                    <div className={`p-3 text-sm text-gray-100 font-mono leading-relaxed relative ${isPreview ? 'max-h-[120px] overflow-hidden code-preview-fade' : 'overflow-x-auto'}`}>
+                        <pre><code className="whitespace-pre-wrap break-words">{code}</code></pre>
+                    </div>
+                </div>
+            );
+        };
+
+        // 優化解析邏輯，支援提取語言標籤
+        const parseContent = (text, isPreview = false) => {
+            if (!text) return null;
+            const parts = text.split(/\x60\x60\x60/);
+            return parts.map((part, index) => {
+                if (index % 2 !== 0) {
+                    let codeText = part;
+                    let language = '';
+                    const firstNewline = part.indexOf('\n');
+                    if (firstNewline !== -1 && firstNewline < 20) {
+                        const firstLine = part.substring(0, firstNewline).trim();
+                        if (/^[a-zA-Z0-9_+-]+$/.test(firstLine)) {
+                            language = firstLine;
+                            codeText = part.substring(firstNewline + 1);
+                        }
+                    }
+                    return <CodeBlock key={index} code={codeText.trim()} language={language} isPreview={isPreview} />;
+                }
+                return <span key={index} className="whitespace-pre-wrap break-words text-gray-800 dark:text-gray-200 leading-relaxed">{part}</span>;
+            });
+        };
+
+        const App = () => {
+            const [isDarkMode, setIsDarkMode] = useState(() => document.documentElement.classList.contains('dark'));
+
+            const toggleDarkMode = () => {
+                if (isDarkMode) {
+                    document.documentElement.classList.remove('dark');
+                    localStorage.setItem('prompt-keep-theme', 'light');
+                    setIsDarkMode(false);
+                } else {
+                    document.documentElement.classList.add('dark');
+                    localStorage.setItem('prompt-keep-theme', 'dark');
+                    setIsDarkMode(true);
+                }
+            };
+
+            const getActiveColor = (hexValue) => {
+                const colorObj = COLORS.find(c => c.value === hexValue) || COLORS[0];
+                return isDarkMode ? colorObj.darkValue : colorObj.value;
+            };
+
+            const [notes, setNotes] = useState(() => {
+                try {
+                    const saved = localStorage.getItem('prompt-keep-notes-local');
+                    if (saved) return JSON.parse(saved);
+                } catch (e) {}
+                return [{ id: '1', title: '歡迎使用', content: '如果在上方填入 Firebase 設定，筆記就會同步到雲端！\n\n右上角可以切換深色/淺色模式喔！🌙\n\n\x60\x60\x60javascript\nconsole.log("Dark Mode Enabled!");\n\x60\x60\x60', color: '#ccff90', timestamp: Date.now() }];
+            });
+
+            const [user, setUser] = useState(null);
+            const [isSyncing, setIsSyncing] = useState(false);
+            const [isComposing, setIsComposing] = useState(false);
+            const [activeNote, setActiveNote] = useState(null);
+            const [isModalEditing, setIsModalEditing] = useState(false);
+            const [noteToDelete, setNoteToDelete] = useState(null); // 管理待刪除的筆記
+            
+            const [newTitle, setNewTitle] = useState('');
+            const [newContent, setNewContent] = useState('');
+            const [newColor, setNewColor] = useState(COLORS[0].value);
+            const [showPalette, setShowPalette] = useState(false);
+
+            const [deferredPrompt, setDeferredPrompt] = useState(null);
+            const [isInstallable, setIsInstallable] = useState(false);
+
+            const composeRef = useRef(null);
+            const textareaRef = useRef(null);
+            const paletteRef = useRef(null);
+
+            // 處理點擊外部自動儲存
+            useOnClickOutside(composeRef, () => {
+                if (isComposing) {
+                    saveNewNote();
+                }
+            });
+
+            // 獨立處理顏色選擇器的 ClickOutside
+            useOnClickOutside(paletteRef, () => {
+                if (showPalette) setShowPalette(false);
+            });
+
+            useEffect(() => {
+                window.addEventListener('beforeinstallprompt', (e) => {
+                    e.preventDefault(); setDeferredPrompt(e); setIsInstallable(true);
+                });
+            }, []);
+
+            useEffect(() => {
+                if (!isFirebaseConfigured) {
+                    localStorage.setItem('prompt-keep-notes-local', JSON.stringify(notes));
+                    return;
+                }
+                setIsSyncing(true);
+                const unsubscribeAuth = auth.onAuthStateChanged((currentUser) => {
+                    if (currentUser) {
+                        setUser(currentUser);
+                        const unsubscribeDb = db.collection('users').doc(currentUser.uid).collection('notes')
+                            .onSnapshot((snapshot) => {
+                                const fetched = [];
+                                snapshot.forEach(doc => fetched.push({ id: doc.id, ...doc.data() }));
+                                fetched.sort((a, b) => b.timestamp - a.timestamp);
+                                setNotes(fetched);
+                                setIsSyncing(false);
+                            }, (err) => { console.error(err); setIsSyncing(false); });
+                        return () => unsubscribeDb();
+                    } else {
+                        auth.signInAnonymously().catch(err => { console.error(err); setIsSyncing(false); });
+                    }
+                });
+                return () => unsubscribeAuth();
+            }, [isFirebaseConfigured, notes]);
+
+            const handleInstallClick = async () => {
+                if (!deferredPrompt) return;
+                deferredPrompt.prompt();
+                const { outcome } = await deferredPrompt.userChoice;
+                if (outcome === 'accepted') setIsInstallable(false);
+                setDeferredPrompt(null);
+            };
+
+            const handleTextareaInput = (e) => {
+                e.target.style.height = 'inherit';
+                e.target.style.height = `${e.target.scrollHeight}px`;
+            };
+
+            const saveNewNote = () => {
+                if (!newTitle.trim() && !newContent.trim()) {
+                     setIsComposing(false); setShowPalette(false); return;
+                }
+                const newNote = { title: newTitle.trim(), content: newContent.trim(), color: newColor, timestamp: Date.now() };
+                
+                if (isFirebaseConfigured && user) {
+                    const noteId = Date.now().toString();
+                    db.collection('users').doc(user.uid).collection('notes').doc(noteId).set(newNote);
+                } else {
+                    setNotes([{ id: Date.now().toString(), ...newNote }, ...notes]);
+                }
+                setNewTitle(''); setNewContent(''); setNewColor(COLORS[0].value);
+                setIsComposing(false); setShowPalette(false);
+                if (textareaRef.current) textareaRef.current.style.height = '100px';
+            };
+
+            const requestDeleteNote = (id, e) => {
+                e.stopPropagation();
+                setNoteToDelete(id); // 觸發 Modal
+            };
+
+            const confirmDeleteNote = () => {
+                if (!noteToDelete) return;
+                const id = noteToDelete;
+                
+                if (isFirebaseConfigured && user) {
+                    db.collection('users').doc(user.uid).collection('notes').doc(id).delete();
+                } else {
+                    setNotes(prevNotes => prevNotes.filter(n => n.id !== id));
+                }
+                if (activeNote && activeNote.id === id) setActiveNote(null);
+                setNoteToDelete(null);
+            };
+
+            const saveEditedNote = () => {
+                if (!activeNote) return;
+                const { id, ...data } = activeNote;
+                data.timestamp = Date.now();
+                if (isFirebaseConfigured && user) {
+                    db.collection('users').doc(user.uid).collection('notes').doc(id).set(data);
+                } else {
+                    setNotes(notes.map(n => n.id === id ? { id, ...data } : n));
+                }
+                setActiveNote(null); setIsModalEditing(false);
+            };
+
+            return (
+                <div className="min-h-screen pb-20 transition-colors duration-200">
+                    <header className="bg-white dark:bg-gray-800 p-4 shadow-sm flex items-center justify-between sticky top-0 z-10 transition-colors duration-200 dark:border-b dark:border-gray-700">
+                        <div className="flex items-center gap-3">
+                            <div className="bg-blue-600 dark:bg-blue-500 p-2 rounded-lg"><Icon name="Copy" size={24} className="text-white" /></div>
+                            <h1 className="text-xl font-bold text-gray-700 dark:text-gray-200 tracking-wide">Prompt Keep</h1>
+                        </div>
+                        <div className="flex items-center gap-2 sm:gap-3">
+                            <button onClick={toggleDarkMode} className="p-2 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-full transition-colors">
+                                {isDarkMode ? <Icon name="Sun" size={18} /> : <Icon name="Moon" size={18} />}
+                            </button>
+                            {isInstallable && (
+                                <button onClick={handleInstallClick} className="flex items-center gap-2 px-3 py-1.5 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 rounded-full font-semibold text-sm border border-blue-200 dark:border-blue-800 transition-colors">
+                                    <Icon name="Download" size={16} /> <span className="hidden sm:inline">安裝 App</span>
+                                </button>
+                            )}
+                            <div className="text-sm text-gray-500 dark:text-gray-400 font-medium hidden sm:flex items-center gap-1.5 ml-2">
+                                {isFirebaseConfigured ? (
+                                    isSyncing ? <span className="text-blue-500 dark:text-blue-400 animate-pulse flex items-center gap-1"><Icon name="Cloud" size={18}/> 同步中</span> 
+                                              : <span className="text-green-600 dark:text-green-400 flex items-center gap-1"><Icon name="Cloud" size={18}/> 已儲存</span>
+                                ) : <span className="text-orange-500 dark:text-orange-400 flex items-center gap-1"><Icon name="HardDrive" size={18}/> 本機儲存</span>}
+                            </div>
+                        </div>
+                    </header>
+
+                    <main className="max-w-6xl mx-auto p-4 sm:p-6 lg:p-8">
+                        {/* Compose Area - 現在有 ClickOutside 保護 */}
+                        <div className="max-w-2xl mx-auto mb-10 relative" ref={composeRef}>
+                            <div className={`rounded-xl transition-all duration-300 ${isComposing ? 'shadow-lg border border-gray-200 dark:border-gray-700' : 'shadow shadow-gray-200 dark:shadow-none hover:shadow-md cursor-text dark:border dark:border-gray-700'}`} style={{ backgroundColor: getActiveColor(newColor) }}>
+                                {!isComposing ? (
+                                    <div className="p-4 flex items-center text-gray-500 dark:text-gray-400 font-medium" onClick={() => { setIsComposing(true); setTimeout(() => { if (textareaRef.current) textareaRef.current.focus(); }, 50); }}>
+                                        <span>新增一則包含 Prompt 的記事...</span><span className="ml-auto text-xs bg-black/5 dark:bg-white/10 px-2 py-1 rounded">支援 {'\x60\x60\x60'}</span>
+                                    </div>
+                                ) : (
+                                    <div className="flex flex-col p-4">
+                                        <input type="text" placeholder="標題" className="w-full bg-transparent outline-none font-bold text-lg mb-3 dark:placeholder-gray-400 dark:text-gray-100" value={newTitle} onChange={e => setNewTitle(e.target.value)} />
+                                        <textarea ref={textareaRef} placeholder={'使用 \x60\x60\x60 包覆程式碼...'} className="w-full bg-transparent outline-none resize-none min-h-[100px] leading-relaxed dark:placeholder-gray-400 dark:text-gray-100" value={newContent} onChange={e => { setNewContent(e.target.value); handleTextareaInput(e); }} />
+                                        <div className="flex justify-between items-center mt-4 pt-2 relative">
+                                            <div className="flex gap-2" ref={paletteRef}>
+                                                <button className={`p-2 rounded-full transition-colors ${showPalette ? 'bg-black/10 dark:bg-white/10 text-gray-900 dark:text-white' : 'hover:bg-black/10 dark:hover:bg-white/10 text-gray-700 dark:text-gray-300'}`} onClick={() => setShowPalette(!showPalette)}><Icon name="Palette" size={18} /></button>
+                                                {showPalette && (
+                                                    <div className="absolute top-12 left-0 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 shadow-xl rounded-lg p-2 flex flex-wrap w-48 gap-1 z-20">
+                                                        {COLORS.map(c => <button key={c.id} className={`w-7 h-7 rounded-full border-2 ${newColor === c.value ? 'border-blue-500' : 'border-transparent dark:border-gray-600'}`} style={{backgroundColor: isDarkMode ? c.darkValue : c.value}} onClick={() => { setNewColor(c.value); setShowPalette(false); }} />)}
+                                                    </div>
+                                                )}
+                                            </div>
+                                            <button className="px-5 py-1.5 font-semibold text-sm hover:bg-black/10 dark:hover:bg-white/10 rounded-md text-gray-800 dark:text-gray-200 transition-colors" onClick={saveNewNote}>關閉</button>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+
+                        {/* Notes Grid */}
+                        <div className="columns-1 sm:columns-2 lg:columns-3 xl:columns-4 gap-4">
+                            {notes.map(note => {
+                                const currentBgColor = getActiveColor(note.color);
+                                const isDefaultLight = note.color === '#ffffff' && !isDarkMode;
+                                return (
+                                <div key={note.id} className="break-inside-avoid mb-4 border rounded-xl overflow-hidden shadow-sm hover:shadow-md transition-all group relative cursor-pointer dark:border-gray-700" 
+                                     style={{ backgroundColor: currentBgColor, borderColor: isDefaultLight ? '#e0e0e0' : (isDarkMode ? '#374151' : 'transparent') }} 
+                                     onClick={() => { setActiveNote({ ...note }); setIsModalEditing(false); }}>
+                                    <div className="p-4 sm:p-5 relative max-h-[600px] overflow-hidden">
+                                        {note.title && <h3 className="font-bold text-lg mb-3 text-gray-900 dark:text-gray-100">{note.title}</h3>}
+                                        <div className="text-base text-gray-800 dark:text-gray-200">{parseContent(note.content, true)}</div>
+                                        <div className="absolute bottom-0 left-0 right-0 h-12 pointer-events-none" style={{ background: `linear-gradient(to top, ${currentBgColor}, transparent)` }} />
+                                    </div>
+                                    <div className="opacity-0 group-hover:opacity-100 absolute top-2 right-2 flex gap-1 transition-opacity">
+                                        <button className="p-1.5 bg-white/80 dark:bg-gray-800/80 backdrop-blur rounded-full hover:bg-red-50 dark:hover:bg-red-900/30 text-gray-600 dark:text-gray-400 hover:text-red-500 dark:hover:text-red-400 shadow-sm" onClick={(e) => requestDeleteNote(note.id, e)}><Icon name="Trash2" size={16} /></button>
+                                    </div>
+                                </div>
+                            )})}
+                        </div>
+                    </main>
+
+                    {/* Editor Modal */}
+                    {activeNote && (
+                        <div className="fixed inset-0 bg-black/60 dark:bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => !isModalEditing && setActiveNote(null)}>
+                            <div className="w-full max-w-2xl rounded-xl shadow-2xl flex flex-col max-h-[90vh] relative border dark:border-gray-700 transition-colors duration-200" style={{ backgroundColor: getActiveColor(activeNote.color) }} onClick={e => e.stopPropagation()}>
+                                <button className="absolute top-4 right-4 p-2 bg-black/5 dark:bg-white/10 hover:bg-black/10 dark:hover:bg-white/20 rounded-full z-10 text-gray-700 dark:text-gray-300 transition-colors" onClick={() => setActiveNote(null)}><Icon name="X" size={20} /></button>
+                                <div className="p-6 flex-1 overflow-y-auto pt-14">
+                                    {isModalEditing ? (
+                                        <React.Fragment>
+                                            <input type="text" className="w-full bg-transparent outline-none font-bold text-2xl mb-4 border-b border-black/10 dark:border-white/10 pb-2 focus:border-black/30 dark:focus:border-white/30 text-gray-900 dark:text-gray-100 transition-colors" value={activeNote.title} onChange={e => setActiveNote({...activeNote, title: e.target.value})} />
+                                            <textarea className="w-full bg-transparent outline-none resize-none min-h-[400px] leading-relaxed text-gray-800 dark:text-gray-200" value={activeNote.content} onChange={e => setActiveNote({...activeNote, content: e.target.value})} />
+                                        </React.Fragment>
+                                    ) : (
+                                        <React.Fragment>
+                                            {activeNote.title && <h2 className="font-bold text-2xl mb-6 text-gray-900 dark:text-gray-100">{activeNote.title}</h2>}
+                                            <div className="text-lg text-gray-800 dark:text-gray-200">{parseContent(activeNote.content, false)}</div>
+                                        </React.Fragment>
+                                    )}
+                                </div>
+                                <div className="p-4 border-t border-black/5 dark:border-white/5 flex justify-between items-center bg-black/5 dark:bg-white/5 rounded-b-xl">
+                                    <div className="flex gap-2">
+                                        <div className="flex gap-1 relative group/palette">
+                                            <button className="p-2 rounded-full hover:bg-white/50 dark:hover:bg-white/10 text-gray-700 dark:text-gray-300 transition-colors"><Icon name="Palette" size={20} /></button>
+                                            <div className="absolute bottom-full left-0 mb-2 hidden group-hover/palette:flex bg-white dark:bg-gray-800 shadow-xl rounded-lg p-2 w-48 flex-wrap gap-1 z-20 border dark:border-gray-700">
+                                                {COLORS.map(c => <button key={c.id} className={`w-7 h-7 rounded-full border-2 ${activeNote.color === c.value ? 'border-blue-500' : 'border-transparent dark:border-gray-600'}`} style={{backgroundColor: isDarkMode ? c.darkValue : c.value}} onClick={() => setActiveNote({...activeNote, color: c.value})} />)}
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div className="flex gap-3">
+                                        {!isModalEditing ? (
+                                            <button className="flex items-center gap-2 px-6 py-2 bg-white/50 dark:bg-white/10 font-medium rounded-lg hover:bg-white/80 dark:hover:bg-white/20 border border-black/10 dark:border-white/10 text-gray-800 dark:text-gray-200 transition-colors" onClick={() => setIsModalEditing(true)}><Icon name="Edit3" size={18} /> 編輯筆記</button>
+                                        ) : (
+                                            <button className="px-6 py-2 bg-gray-900 dark:bg-blue-600 text-white font-medium rounded-lg hover:bg-gray-800 dark:hover:bg-blue-500 transition-colors shadow-md" onClick={saveEditedNote}>儲存變更</button>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* 刪除確認 Modal */}
+                    <ConfirmModal 
+                        isOpen={!!noteToDelete} 
+                        title="刪除筆記" 
+                        message="確定要刪除這則筆記嗎？刪除後將無法還原。" 
+                        onConfirm={confirmDeleteNote} 
+                        onCancel={() => setNoteToDelete(null)} 
+                    />
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+
+    <!-- ============================================== -->
+    <!-- PWA & Cloud Sync Module                        -->
+    <!-- ============================================== -->
+    <link rel="manifest" href="manifest.json">
+    <style>
+        #pwa-auth-bar { position: fixed; bottom: 20px; right: 20px; z-index: 99999; display: flex; align-items: center; gap: 10px; background: rgba(255,255,255,0.95); padding: 10px 20px; border-radius: 50px; border: 1px solid #e2e8f0; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.1), 0 8px 10px -6px rgba(0,0,0,0.1); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 14px; backdrop-filter: blur(10px); }
+        .pwa-btn { cursor: pointer; background: #3b82f6; color: white; border: none; padding: 8px 16px; border-radius: 9999px; font-weight: 700; font-size: 13px; transition: all 0.2s; box-shadow: 0 2px 4px rgba(59, 130, 246, 0.3); }
+        .pwa-btn:hover { background: #2563eb; transform: translateY(-1px); }
+        .pwa-avatar { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; border: 2px solid white; box-shadow: 0 0 0 1px #e2e8f0; }
+        .pwa-user-info { display: flex; align-items: center; gap: 8px; font-weight: 500; color: #334155; }
+    </style>
+    
+    <div id="pwa-auth-bar">
+        <div class="pwa-user-info" id="pwa-user">檢查登入狀態...</div>
+        <button id="pwa-btn" class="pwa-btn">載入中</button>
+    </div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // 1. 註冊 Service Worker
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('sw.js').catch(err => console.log('SW 註冊失敗', err));
+            });
+        }
+
+        // 2. 初始化 Firebase
+        const config = { apiKey: "AIzaSyD6s5zYl7VtTxnqcXPkWccGAB7zug1pgi8", authDomain: "https://flipcube88.github.io/testprompt/", projectId: "testprompt-e4212" };
+        const app = initializeApp(config);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const provider = new GoogleAuthProvider();
+
+        // 3. 處理登入與同步
+        onAuthStateChanged(auth, (user) => {
+            const nameEl = document.getElementById('pwa-user');
+            const btnEl = document.getElementById('pwa-btn');
+            
+            if (user) {
+                nameEl.innerHTML = `<img src="${user.photoURL}" class="pwa-avatar" onerror="this.style.display='none'"> <span>${user.displayName}</span>`;
+                btnEl.innerText = "切換帳號";
+                btnEl.onclick = () => confirm("確定要登出並切換帳號嗎？") && signOut(auth);
+                
+                // 長期使用的標準化資料庫路徑
+                const docRef = doc(db, 'users', user.uid, 'data', 'userState');
+                onSnapshot(docRef, (snap) => {
+                    if (snap.exists() && window.onCloudUpdate) {
+                        window.onCloudUpdate(snap.data()); 
+                    }
+                });
+
+                window.saveToCloud = (data) => setDoc(docRef, { ...data, lastSynced: Date.now() }, { merge: true });
+            } else {
+                nameEl.innerHTML = "<span>訪客模式</span>";
+                btnEl.innerText = "Google 登入";
+                btnEl.onclick = () => signInWithPopup(auth, provider).catch(e => alert("登入失敗：" + e.message));
+            }
+        });
+    </script>
+</body>
+</html>
