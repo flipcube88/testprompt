@@ -23,7 +23,6 @@
       const link = document.createElement('link'); link.rel = 'manifest'; link.href = manifestURL; document.head.appendChild(link);
     </script>
 
-    <!-- 預防 FOUC：在畫面渲染前先套用深色模式設定 -->
     <script>
         if (localStorage.getItem('prompt-keep-theme') === 'dark' || (!('prompt-keep-theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
             document.documentElement.classList.add('dark');
@@ -36,16 +35,16 @@
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
     <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
     
-    <!-- 引入 Tailwind CSS 並開啟 class 深色模式 -->
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
+
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = { darkMode: 'class' };
     </script>
     
     <script src="https://unpkg.com/lucide@latest"></script>
-    
-    
-    
 
     <style>
         ::-webkit-scrollbar { width: 8px; height: 8px; }
@@ -70,6 +69,24 @@
     <script type="text/babel">
         const { useState, useEffect, useRef, useCallback } = React;
 
+        // --- Firebase 初始化 ---
+        const firebaseConfig = {
+            apiKey: "AIzaSyD6s5zYl7VtTxnqcXPkWccGAB7zug1pgi8",
+            authDomain: "testprompt-e4212.firebaseapp.com", // 已經修正為正確的 Domain
+            projectId: "testprompt-e4212",
+            storageBucket: "testprompt-e4212.appspot.com",
+            messagingSenderId: "你的_SENDER_ID", // 如果無用到 FCM 可以留空或者唔理佢
+            appId: "你的_APP_ID" // 如果無用到 Analytics 可以留空或者唔理佢
+        };
+        
+        // 初始化 Firebase
+        if (!firebase.apps.length) {
+            firebase.initializeApp(firebaseConfig);
+        }
+        const auth = firebase.auth();
+        const db = firebase.firestore();
+        const googleProvider = new firebase.auth.GoogleAuthProvider();
+
         // Custom Hook: 處理點擊外部事件
         function useOnClickOutside(ref, handler) {
             useEffect(() => {
@@ -84,21 +101,6 @@
                     document.removeEventListener("touchstart", listener);
                 };
             }, [ref, handler]);
-        }
-
-        const firebaseConfig = {
-            apiKey: "你的_API_KEY",
-            authDomain: "你的_PROJECT_ID.firebaseapp.com",
-            projectId: "你的_PROJECT_ID",
-            storageBucket: "你的_PROJECT_ID.appspot.com",
-            messagingSenderId: "你的_SENDER_ID",
-            appId: "你的_APP_ID"
-        };
-        
-        let app, auth, db;
-        let isFirebaseConfigured = firebaseConfig.apiKey !== "你的_API_KEY" && firebaseConfig.apiKey !== "";
-        if (isFirebaseConfigured) {
-             app = firebase.initializeApp(firebaseConfig); auth = firebase.auth(); db = firebase.firestore();
         }
 
         const COLORS = [
@@ -116,7 +118,7 @@
             { id: 'gray', value: '#e8eaed', darkValue: '#3c3f43' },
         ];
 
-        // 優化後的 Icon 組件：加入清理機制
+        // 優化後的 Icon 組件
         const Icon = ({ name, size = 24, className = "" }) => {
             const containerRef = useRef(null);
             useEffect(() => {
@@ -187,7 +189,6 @@
             );
         };
 
-        // 優化解析邏輯，支援提取語言標籤
         const parseContent = (text, isPreview = false) => {
             if (!text) return null;
             const parts = text.split(/\x60\x60\x60/);
@@ -211,6 +212,99 @@
 
         const App = () => {
             const [isDarkMode, setIsDarkMode] = useState(() => document.documentElement.classList.contains('dark'));
+            const [notes, setNotes] = useState(() => {
+                try {
+                    const saved = localStorage.getItem('prompt-keep-notes-local');
+                    if (saved) return JSON.parse(saved);
+                } catch (e) {}
+                return [{ id: '1', title: '歡迎使用', content: '只要登入 Google 帳號，筆記就會同步到雲端！\n\n右上角可以切換深色/淺色模式喔！🌙\n\n\x60\x60\x60javascript\nconsole.log("Dark Mode Enabled!");\n\x60\x60\x60', color: '#ccff90', timestamp: Date.now() }];
+            });
+
+            // Authentication & Sync State
+            const [user, setUser] = useState(null);
+            const [isSyncing, setIsSyncing] = useState(false);
+            const [authChecking, setAuthChecking] = useState(true);
+
+            const [isComposing, setIsComposing] = useState(false);
+            const [activeNote, setActiveNote] = useState(null);
+            const [isModalEditing, setIsModalEditing] = useState(false);
+            const [noteToDelete, setNoteToDelete] = useState(null); 
+            
+            const [newTitle, setNewTitle] = useState('');
+            const [newContent, setNewContent] = useState('');
+            const [newColor, setNewColor] = useState(COLORS[0].value);
+            const [showPalette, setShowPalette] = useState(false);
+
+            const [deferredPrompt, setDeferredPrompt] = useState(null);
+            const [isInstallable, setIsInstallable] = useState(false);
+
+            const composeRef = useRef(null);
+            const textareaRef = useRef(null);
+            const paletteRef = useRef(null);
+
+            // 處理登入與登出
+            const handleLogin = () => {
+                auth.signInWithPopup(googleProvider).catch(e => alert("登入失敗：" + e.message));
+            };
+
+            const handleLogout = () => {
+                if (window.confirm("確定要登出帳號嗎？")) {
+                    auth.signOut();
+                    setNotes([]); // 登出後清空畫面筆記
+                }
+            };
+
+            useOnClickOutside(composeRef, () => {
+                if (isComposing) saveNewNote();
+            });
+
+            useOnClickOutside(paletteRef, () => {
+                if (showPalette) setShowPalette(false);
+            });
+
+            useEffect(() => {
+                window.addEventListener('beforeinstallprompt', (e) => {
+                    e.preventDefault(); setDeferredPrompt(e); setIsInstallable(true);
+                });
+            }, []);
+
+            // 監聽登入狀態與同步資料庫
+            useEffect(() => {
+                const unsubscribeAuth = auth.onAuthStateChanged((currentUser) => {
+                    setUser(currentUser);
+                    setAuthChecking(false);
+
+                    if (currentUser) {
+                        setIsSyncing(true);
+                        const unsubscribeDb = db.collection('users').doc(currentUser.uid).collection('notes')
+                            .onSnapshot((snapshot) => {
+                                const fetched = [];
+                                snapshot.forEach(doc => fetched.push({ id: doc.id, ...doc.data() }));
+                                fetched.sort((a, b) => b.timestamp - a.timestamp);
+                                setNotes(fetched);
+                                setIsSyncing(false);
+                            }, (err) => { 
+                                console.error(err); 
+                                setIsSyncing(false); 
+                            });
+                        return () => unsubscribeDb();
+                    } else {
+                        // 如果無登入，就讀取 Local Storage
+                        try {
+                            const saved = localStorage.getItem('prompt-keep-notes-local');
+                            if (saved) setNotes(JSON.parse(saved));
+                        } catch (e) {}
+                    }
+                });
+                return () => unsubscribeAuth();
+            }, []);
+
+            // 當訪客模式下更新筆記，儲存到 Local Storage
+            useEffect(() => {
+                if (!user) {
+                    localStorage.setItem('prompt-keep-notes-local', JSON.stringify(notes));
+                }
+            }, [notes, user]);
 
             const toggleDarkMode = () => {
                 if (isDarkMode) {
@@ -229,84 +323,6 @@
                 return isDarkMode ? colorObj.darkValue : colorObj.value;
             };
 
-            const [notes, setNotes] = useState(() => {
-                try {
-                    const saved = localStorage.getItem('prompt-keep-notes-local');
-                    if (saved) return JSON.parse(saved);
-                } catch (e) {}
-                return [{ id: '1', title: '歡迎使用', content: '如果在上方填入 Firebase 設定，筆記就會同步到雲端！\n\n右上角可以切換深色/淺色模式喔！🌙\n\n\x60\x60\x60javascript\nconsole.log("Dark Mode Enabled!");\n\x60\x60\x60', color: '#ccff90', timestamp: Date.now() }];
-            });
-
-            const [user, setUser] = useState(null);
-            const [isSyncing, setIsSyncing] = useState(false);
-            const [isComposing, setIsComposing] = useState(false);
-            const [activeNote, setActiveNote] = useState(null);
-            const [isModalEditing, setIsModalEditing] = useState(false);
-            const [noteToDelete, setNoteToDelete] = useState(null); // 管理待刪除的筆記
-            
-            const [newTitle, setNewTitle] = useState('');
-            const [newContent, setNewContent] = useState('');
-            const [newColor, setNewColor] = useState(COLORS[0].value);
-            const [showPalette, setShowPalette] = useState(false);
-
-            const [deferredPrompt, setDeferredPrompt] = useState(null);
-            const [isInstallable, setIsInstallable] = useState(false);
-
-            const composeRef = useRef(null);
-            const textareaRef = useRef(null);
-            const paletteRef = useRef(null);
-
-            // 處理點擊外部自動儲存
-            useOnClickOutside(composeRef, () => {
-                if (isComposing) {
-                    saveNewNote();
-                }
-            });
-
-            // 獨立處理顏色選擇器的 ClickOutside
-            useOnClickOutside(paletteRef, () => {
-                if (showPalette) setShowPalette(false);
-            });
-
-            useEffect(() => {
-                window.addEventListener('beforeinstallprompt', (e) => {
-                    e.preventDefault(); setDeferredPrompt(e); setIsInstallable(true);
-                });
-            }, []);
-
-            useEffect(() => {
-                if (!isFirebaseConfigured) {
-                    localStorage.setItem('prompt-keep-notes-local', JSON.stringify(notes));
-                    return;
-                }
-                setIsSyncing(true);
-                const unsubscribeAuth = auth.onAuthStateChanged((currentUser) => {
-                    if (currentUser) {
-                        setUser(currentUser);
-                        const unsubscribeDb = db.collection('users').doc(currentUser.uid).collection('notes')
-                            .onSnapshot((snapshot) => {
-                                const fetched = [];
-                                snapshot.forEach(doc => fetched.push({ id: doc.id, ...doc.data() }));
-                                fetched.sort((a, b) => b.timestamp - a.timestamp);
-                                setNotes(fetched);
-                                setIsSyncing(false);
-                            }, (err) => { console.error(err); setIsSyncing(false); });
-                        return () => unsubscribeDb();
-                    } else {
-                        auth.signInAnonymously().catch(err => { console.error(err); setIsSyncing(false); });
-                    }
-                });
-                return () => unsubscribeAuth();
-            }, [isFirebaseConfigured, notes]);
-
-            const handleInstallClick = async () => {
-                if (!deferredPrompt) return;
-                deferredPrompt.prompt();
-                const { outcome } = await deferredPrompt.userChoice;
-                if (outcome === 'accepted') setIsInstallable(false);
-                setDeferredPrompt(null);
-            };
-
             const handleTextareaInput = (e) => {
                 e.target.style.height = 'inherit';
                 e.target.style.height = `${e.target.scrollHeight}px`;
@@ -318,7 +334,7 @@
                 }
                 const newNote = { title: newTitle.trim(), content: newContent.trim(), color: newColor, timestamp: Date.now() };
                 
-                if (isFirebaseConfigured && user) {
+                if (user) {
                     const noteId = Date.now().toString();
                     db.collection('users').doc(user.uid).collection('notes').doc(noteId).set(newNote);
                 } else {
@@ -331,14 +347,14 @@
 
             const requestDeleteNote = (id, e) => {
                 e.stopPropagation();
-                setNoteToDelete(id); // 觸發 Modal
+                setNoteToDelete(id); 
             };
 
             const confirmDeleteNote = () => {
                 if (!noteToDelete) return;
                 const id = noteToDelete;
                 
-                if (isFirebaseConfigured && user) {
+                if (user) {
                     db.collection('users').doc(user.uid).collection('notes').doc(id).delete();
                 } else {
                     setNotes(prevNotes => prevNotes.filter(n => n.id !== id));
@@ -351,7 +367,7 @@
                 if (!activeNote) return;
                 const { id, ...data } = activeNote;
                 data.timestamp = Date.now();
-                if (isFirebaseConfigured && user) {
+                if (user) {
                     db.collection('users').doc(user.uid).collection('notes').doc(id).set(data);
                 } else {
                     setNotes(notes.map(n => n.id === id ? { id, ...data } : n));
@@ -359,33 +375,62 @@
                 setActiveNote(null); setIsModalEditing(false);
             };
 
+            const handleInstallClick = async () => {
+                if (!deferredPrompt) return;
+                deferredPrompt.prompt();
+                const { outcome } = await deferredPrompt.userChoice;
+                if (outcome === 'accepted') setIsInstallable(false);
+                setDeferredPrompt(null);
+            };
+
             return (
                 <div className="min-h-screen pb-20 transition-colors duration-200">
                     <header className="bg-white dark:bg-gray-800 p-4 shadow-sm flex items-center justify-between sticky top-0 z-10 transition-colors duration-200 dark:border-b dark:border-gray-700">
                         <div className="flex items-center gap-3">
                             <div className="bg-blue-600 dark:bg-blue-500 p-2 rounded-lg"><Icon name="Copy" size={24} className="text-white" /></div>
-                            <h1 className="text-xl font-bold text-gray-700 dark:text-gray-200 tracking-wide">Prompt Keep</h1>
+                            <h1 className="text-xl font-bold text-gray-700 dark:text-gray-200 tracking-wide hidden sm:block">Prompt Keep</h1>
                         </div>
+                        
                         <div className="flex items-center gap-2 sm:gap-3">
-                            <button onClick={toggleDarkMode} className="p-2 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-full transition-colors">
-                                {isDarkMode ? <Icon name="Sun" size={18} /> : <Icon name="Moon" size={18} />}
-                            </button>
+                            {/* 同步狀態 */}
+                            <div className="text-xs sm:text-sm text-gray-500 dark:text-gray-400 font-medium flex items-center gap-1.5 mr-1">
+                                {user ? (
+                                    isSyncing ? <span className="text-blue-500 dark:text-blue-400 animate-pulse flex items-center gap-1"><Icon name="Cloud" size={16}/> <span className="hidden sm:inline">同步中</span></span> 
+                                              : <span className="text-green-600 dark:text-green-400 flex items-center gap-1"><Icon name="Cloud" size={16}/> <span className="hidden sm:inline">已同步</span></span>
+                                ) : <span className="text-orange-500 dark:text-orange-400 flex items-center gap-1"><Icon name="HardDrive" size={16}/> <span className="hidden sm:inline">本機儲存</span></span>}
+                            </div>
+
+                            {/* PWA 安裝按鈕 */}
                             {isInstallable && (
                                 <button onClick={handleInstallClick} className="flex items-center gap-2 px-3 py-1.5 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 rounded-full font-semibold text-sm border border-blue-200 dark:border-blue-800 transition-colors">
                                     <Icon name="Download" size={16} /> <span className="hidden sm:inline">安裝 App</span>
                                 </button>
                             )}
-                            <div className="text-sm text-gray-500 dark:text-gray-400 font-medium hidden sm:flex items-center gap-1.5 ml-2">
-                                {isFirebaseConfigured ? (
-                                    isSyncing ? <span className="text-blue-500 dark:text-blue-400 animate-pulse flex items-center gap-1"><Icon name="Cloud" size={18}/> 同步中</span> 
-                                              : <span className="text-green-600 dark:text-green-400 flex items-center gap-1"><Icon name="Cloud" size={18}/> 已儲存</span>
-                                ) : <span className="text-orange-500 dark:text-orange-400 flex items-center gap-1"><Icon name="HardDrive" size={18}/> 本機儲存</span>}
-                            </div>
+
+                            {/* 深色模式切換 */}
+                            <button onClick={toggleDarkMode} className="p-2 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-full transition-colors">
+                                {isDarkMode ? <Icon name="Sun" size={18} /> : <Icon name="Moon" size={18} />}
+                            </button>
+
+                            {/* Google 登入/帳號按鈕 (取代舊嘅 PWA 底部 Bar) */}
+                            {!authChecking && (
+                                user ? (
+                                    <button onClick={handleLogout} className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-full font-medium text-sm transition-colors border dark:border-gray-600" title="點擊登出">
+                                        <img src={user.photoURL} alt="Avatar" className="w-6 h-6 rounded-full" onError={(e) => e.target.style.display='none'} />
+                                        <span className="text-gray-700 dark:text-gray-200 hidden sm:inline">{user.displayName}</span>
+                                    </button>
+                                ) : (
+                                    <button onClick={handleLogin} className="flex items-center gap-2 px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-full font-medium text-sm transition-colors shadow-sm">
+                                        <Icon name="LogIn" size={16} />
+                                        <span className="hidden sm:inline">Google 登入</span>
+                                    </button>
+                                )
+                            )}
                         </div>
                     </header>
 
                     <main className="max-w-6xl mx-auto p-4 sm:p-6 lg:p-8">
-                        {/* Compose Area - 現在有 ClickOutside 保護 */}
+                        {/* Compose Area */}
                         <div className="max-w-2xl mx-auto mb-10 relative" ref={composeRef}>
                             <div className={`rounded-xl transition-all duration-300 ${isComposing ? 'shadow-lg border border-gray-200 dark:border-gray-700' : 'shadow shadow-gray-200 dark:shadow-none hover:shadow-md cursor-text dark:border dark:border-gray-700'}`} style={{ backgroundColor: getActiveColor(newColor) }}>
                                 {!isComposing ? (
@@ -473,7 +518,6 @@
                         </div>
                     )}
 
-                    {/* 刪除確認 Modal */}
                     <ConfirmModal 
                         isOpen={!!noteToDelete} 
                         title="刪除筆記" 
@@ -488,68 +532,13 @@
         const root = ReactDOM.createRoot(document.getElementById('root'));
         root.render(<App />);
     </script>
-
-    <!-- ============================================== -->
-    <!-- PWA & Cloud Sync Module                        -->
-    <!-- ============================================== -->
-    <link rel="manifest" href="manifest.json">
-    <style>
-        #pwa-auth-bar { position: fixed; bottom: 20px; right: 20px; z-index: 99999; display: flex; align-items: center; gap: 10px; background: rgba(255,255,255,0.95); padding: 10px 20px; border-radius: 50px; border: 1px solid #e2e8f0; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.1), 0 8px 10px -6px rgba(0,0,0,0.1); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 14px; backdrop-filter: blur(10px); }
-        .pwa-btn { cursor: pointer; background: #3b82f6; color: white; border: none; padding: 8px 16px; border-radius: 9999px; font-weight: 700; font-size: 13px; transition: all 0.2s; box-shadow: 0 2px 4px rgba(59, 130, 246, 0.3); }
-        .pwa-btn:hover { background: #2563eb; transform: translateY(-1px); }
-        .pwa-avatar { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; border: 2px solid white; box-shadow: 0 0 0 1px #e2e8f0; }
-        .pwa-user-info { display: flex; align-items: center; gap: 8px; font-weight: 500; color: #334155; }
-    </style>
     
-    <div id="pwa-auth-bar">
-        <div class="pwa-user-info" id="pwa-user">檢查登入狀態...</div>
-        <button id="pwa-btn" class="pwa-btn">載入中</button>
-    </div>
-
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-
-        // 1. 註冊 Service Worker
+    <script>
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => {
                 navigator.serviceWorker.register('sw.js').catch(err => console.log('SW 註冊失敗', err));
             });
         }
-
-        // 2. 初始化 Firebase
-        const config = { apiKey: "AIzaSyD6s5zYl7VtTxnqcXPkWccGAB7zug1pgi8", authDomain: "https://flipcube88.github.io/testprompt/", projectId: "testprompt-e4212" };
-        const app = initializeApp(config);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
-        const provider = new GoogleAuthProvider();
-
-        // 3. 處理登入與同步
-        onAuthStateChanged(auth, (user) => {
-            const nameEl = document.getElementById('pwa-user');
-            const btnEl = document.getElementById('pwa-btn');
-            
-            if (user) {
-                nameEl.innerHTML = `<img src="${user.photoURL}" class="pwa-avatar" onerror="this.style.display='none'"> <span>${user.displayName}</span>`;
-                btnEl.innerText = "切換帳號";
-                btnEl.onclick = () => confirm("確定要登出並切換帳號嗎？") && signOut(auth);
-                
-                // 長期使用的標準化資料庫路徑
-                const docRef = doc(db, 'users', user.uid, 'data', 'userState');
-                onSnapshot(docRef, (snap) => {
-                    if (snap.exists() && window.onCloudUpdate) {
-                        window.onCloudUpdate(snap.data()); 
-                    }
-                });
-
-                window.saveToCloud = (data) => setDoc(docRef, { ...data, lastSynced: Date.now() }, { merge: true });
-            } else {
-                nameEl.innerHTML = "<span>訪客模式</span>";
-                btnEl.innerText = "Google 登入";
-                btnEl.onclick = () => signInWithPopup(auth, provider).catch(e => alert("登入失敗：" + e.message));
-            }
-        });
     </script>
 </body>
 </html>
