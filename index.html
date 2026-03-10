@@ -302,7 +302,7 @@
                     const ta = document.createElement("textarea"); ta.value = code;
                     ta.style.cssText = "position:fixed;left:-999999px"; document.body.appendChild(ta);
                     ta.focus(); ta.select();
-                    try { document.execCommand('copy'); copy(); } catch {}
+                    try { document.execCommand('copy'); copy(); } catch(e) {}
                     document.body.removeChild(ta);
                 }
             }, [code]);
@@ -414,7 +414,7 @@
                 try {
                     const saved = localStorage.getItem('prompt-keep-notes-local');
                     if (saved) return JSON.parse(saved);
-                } catch {}
+                } catch(e) {}
                 return [{ id: '1', title: '歡迎使用 ✨', content: '登入 Google 帳號後，筆記自動雲端同步！\n\n**粗體** / *斜體* / ~~刪除線~~ 都支援喇 🎉\n\n用 `#tag` 就可以加標籤分類，例如 #chatgpt #工作\n\n```javascript\nconsole.log("Markdown + Code 都齊咗！");\n```', color: '#ccff90', timestamp: Date.now() }];
             });
 
@@ -501,7 +501,7 @@
                         try {
                             const saved = localStorage.getItem('prompt-keep-notes-local');
                             if (saved) setNotes(JSON.parse(saved));
-                        } catch {}
+                        } catch(e) {}
                     }
                 });
 
